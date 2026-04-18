@@ -11,6 +11,9 @@ const OrderItemSchema = new mongoose.Schema(
 
 const OrderSchema = new mongoose.Schema(
   {
+    /** Same as WhatsApp checkout order id (e.g. ORD…), for linking Payment + admin UI. */
+    businessOrderId: { type: String, trim: true, sparse: true, unique: true, index: true },
+    userId: { type: String, trim: true, default: "" },
     customerName: { type: String, required: true, trim: true },
     phoneNumber: { type: String, required: true, trim: true },
     address: { type: String, required: true, trim: true },
@@ -27,7 +30,7 @@ const OrderSchema = new mongoose.Schema(
     orderStatus: {
       type: String,
       required: true,
-      enum: ["pending", "confirmed", "ready_to_ship", "shipped", "delivered", "cancelled"],
+      enum: ["pending", "confirmed", "shipped", "delivered", "cancelled"],
       default: "pending",
     },
 

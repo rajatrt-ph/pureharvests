@@ -67,7 +67,7 @@ export async function GET(req: Request) {
     if (search) {
       const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const rx = new RegExp(escaped, "i");
-      filter.$or = [{ customerName: rx }, { phoneNumber: rx }];
+      filter.$or = [{ customerName: rx }, { phoneNumber: rx }, { businessOrderId: rx }];
     }
 
     if (range) {
@@ -154,13 +154,7 @@ export async function POST(req: Request) {
       items: Array<{ productName: string; quantity: number; price: number }>;
       orderValue: number;
       paymentStatus: "pending" | "paid" | "failed";
-      orderStatus:
-        | "pending"
-        | "confirmed"
-        | "ready_to_ship"
-        | "shipped"
-        | "delivered"
-        | "cancelled";
+      orderStatus: "pending" | "confirmed" | "shipped" | "delivered" | "cancelled";
       notes: string;
     }>;
 

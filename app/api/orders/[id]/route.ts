@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import mongoose from "mongoose";
 
 import { connectToDatabase } from "@/lib/db";
+import { notifyCustomerOrderStatusChange } from "@/lib/notifications/orderStatusWhatsApp";
 import { OrderModel } from "@/models/Order";
 
-const ORDER_STATUS_FLOW = ["pending", "confirmed", "ready_to_ship", "shipped", "delivered"] as const;
+/** Linear lifecycle: created → confirmed (paid) → shipped → delivered. */
+const ORDER_STATUS_FLOW = ["pending", "confirmed", "shipped", "delivered"] as const;
 const ORDER_STATUS_VALUES = [...ORDER_STATUS_FLOW, "cancelled"] as const;
 
 type OrderStatus = (typeof ORDER_STATUS_VALUES)[number];
@@ -59,13 +61,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
 
     const body = (await req.json()) as Partial<{
-      orderStatus:
-        | "pending"
-        | "confirmed"
-        | "ready_to_ship"
-        | "shipped"
-        | "delivered"
-        | "cancelled";
+      orderStatus: "pending" | "confirmed" | "shipped" | "delivered" | "cancelled";
       notes: string;
     }>;
 
@@ -89,13 +85,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       return NextResponse.json({ error: "Order not found" }, { status: 404 });
     }
 
+    const previousStatus = order.orderStatus as OrderStatus;
+
     if (requestedStatus) {
       const currentStatus = order.orderStatus as OrderStatus;
       if (!canTransitionOrderStatus(currentStatus, requestedStatus)) {
         return NextResponse.json(
           {
             error:
-              "Invalid status transition. Allowed flow: pending -> confirmed -> ready_to_ship -> shipped -> delivered, cancelled anytime.",
+              "Invalid status transition. Allowed flow: pending -> confirmed -> shipped -> delivered, cancelled anytime.",
           },
           { status: 400 },
         );
@@ -108,7 +106,22 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
 
     const updated = await order.save();
-    return NextResponse.json({ order: updated.toObject() });
+    const plain = updated.toObject();
+
+    if (requestedStatus && previousStatus !== requestedStatus) {
+      void notifyCustomerOrderStatusChange(
+        {
+          phoneNumber: plain.phoneNumber,
+          customerName: plain.customerName,
+          businessOrderId: typeof plain.businessOrderId === "string" ? plain.businessOrderId : undefined,
+          orderStatus: plain.orderStatus,
+          _id: plain._id,
+        },
+        previousStatus,
+      );
+    }
+
+    return NextResponse.json({ order: plain });
   } catch (err) {
     if (err instanceof mongoose.Error.ValidationError) {
       return NextResponse.json({ error: err.message }, { status: 400 });

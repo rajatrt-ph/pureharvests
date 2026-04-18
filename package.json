@@ -10,7 +10,9 @@
     "lint:fix": "eslint --fix",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
-    "seed:orders": "node --env-file=.env.local scripts/seed-orders.mjs"
+    "seed:products": "node --env-file=.env.local scripts/seed-products.mjs",
+    "seed:orders": "node --env-file=.env.local scripts/seed-orders.mjs",
+    "migrate:order-status": "node --env-file=.env.local scripts/migrate-order-status-remove-ready-to-ship.mjs"
   },
   "dependencies": {
     "jose": "^6.2.2",

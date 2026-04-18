@@ -5,9 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const ORDER_STATUSES = [
   { value: "", label: "All statuses" },
-  { value: "pending", label: "Pending" },
+  { value: "pending", label: "Order created" },
   { value: "confirmed", label: "Confirmed" },
-  { value: "ready_to_ship", label: "Ready to ship" },
   { value: "shipped", label: "Shipped" },
   { value: "delivered", label: "Delivered" },
   { value: "cancelled", label: "Cancelled" },
@@ -15,6 +14,7 @@ const ORDER_STATUSES = [
 
 type OrderRow = {
   _id: string;
+  businessOrderId?: string;
   customerName: string;
   phoneNumber: string;
   orderValue: number;
@@ -129,7 +129,7 @@ export function OrdersTable() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-brand">Orders</h1>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-            Search by customer name or phone. Filter by status and time range.
+            Search by customer name, phone, or checkout order ref (ORD…). Filter by status and time range.
           </p>
         </div>
       </div>
@@ -139,7 +139,7 @@ export function OrdersTable() {
           <span className="sr-only">Search</span>
           <input
             type="search"
-            placeholder="Search name or phone…"
+            placeholder="Search name, phone, or order ref…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             className="w-full rounded-2xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand/40"
@@ -257,6 +257,9 @@ export function OrdersTable() {
                     >
                       {row._id}
                     </Link>
+                    {row.businessOrderId ? (
+                      <div className="mt-0.5 text-[11px] font-normal text-zinc-500">{row.businessOrderId}</div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 font-medium">{row.customerName}</td>
                   <td className="px-4 py-3">{row.phoneNumber}</td>

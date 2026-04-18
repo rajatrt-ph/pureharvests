@@ -4,9 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 const ORDER_STATUSES = [
-  { value: "pending", label: "Pending" },
+  { value: "pending", label: "Order created" },
   { value: "confirmed", label: "Confirmed" },
-  { value: "ready_to_ship", label: "Ready to ship" },
   { value: "shipped", label: "Shipped" },
   { value: "delivered", label: "Delivered" },
   { value: "cancelled", label: "Cancelled" },
@@ -23,6 +22,8 @@ type OrderItem = {
 
 type Order = {
   _id: string;
+  /** Checkout / Razorpay reference (e.g. ORD…) when order came from WhatsApp flow. */
+  businessOrderId?: string;
   customerName: string;
   phoneNumber: string;
   address: string;
@@ -39,7 +40,7 @@ type OrderResponse = {
   error?: string;
 };
 
-const LINEAR_FLOW: OrderStatus[] = ["pending", "confirmed", "ready_to_ship", "shipped", "delivered"];
+const LINEAR_FLOW: OrderStatus[] = ["pending", "confirmed", "shipped", "delivered"];
 
 function formatDate(value?: string) {
   if (!value) return "—";
@@ -56,12 +57,16 @@ function formatDate(value?: string) {
 function getTimelineSteps(orderStatus: OrderStatus) {
   if (orderStatus === "cancelled") {
     return [
-      { key: "pending", label: "Pending", state: "done" as const },
+      {
+        key: "pending",
+        label: ORDER_STATUSES.find((s) => s.value === "pending")!.label,
+        state: "done" as const,
+      },
       { key: "cancelled", label: "Cancelled", state: "current" as const },
     ];
   }
 
-  const linear = ["pending", "confirmed", "ready_to_ship", "shipped", "delivered"] as const;
+  const linear = ["pending", "confirmed", "shipped", "delivered"] as const;
   const activeIndex = Math.max(0, linear.indexOf(orderStatus as (typeof linear)[number]));
 
   return linear.map((step, index) => {
@@ -181,7 +186,15 @@ export function OrderDetails({ orderId }: { orderId: string }) {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-brand">Order Details</h1>
-          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Order ID: {orderId}</p>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            {order?.businessOrderId ? (
+              <>
+                Order ref: <span className="font-mono text-xs text-zinc-800 dark:text-zinc-200">{order.businessOrderId}</span>
+                <span className="text-zinc-400"> · </span>
+              </>
+            ) : null}
+            Record: <span className="font-mono text-xs">{orderId}</span>
+          </p>
         </div>
         <Link
           href="/admin/orders"
