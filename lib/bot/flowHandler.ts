@@ -54,18 +54,37 @@ function formatInrCartTotal(total: number) {
   return `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(total)}`;
 }
 
+type CartMenuLine = { name: string; quantity: number; price: number };
+
+function formatCartItemsBlock(items: CartMenuLine[]): string {
+  if (!items.length) return "";
+  const lines = items.map(
+    (it) => `• ${it.name} × ${it.quantity} — ${formatInrCartTotal(it.price * it.quantity)}`,
+  );
+  return `*Your cart:*\n${lines.join("\n")}`;
+}
+
 /** Shared copy for “add more vs go to address” (after add-to-cart or stock/cart dead-ends). */
-function buildCartContinueMenuBody(leadParagraph: string | undefined, cartTotal: number): string {
+function buildCartContinueMenuBody(options: {
+  items: CartMenuLine[];
+  cartTotal: number;
+  /** Optional lead (e.g. stock message) shown above the cart list. */
+  note?: string;
+}): string {
+  const { items, cartTotal, note } = options;
   const totalStr = formatInrCartTotal(cartTotal);
   const core = [
     "What would you like to do next?",
     "1. Add another product",
     `2. Continue to delivery — Cart total: ${totalStr}`,
   ].join("\n");
-  if (leadParagraph?.trim()) {
-    return `${leadParagraph.trim()}\n\n${core}`;
-  }
-  return core;
+  const cartBlock = formatCartItemsBlock(items);
+  const parts = [note?.trim(), cartBlock, core].filter((p) => p && p.length > 0);
+  return parts.join("\n\n");
+}
+
+function cartLinesForContinueMenu(cart: { items: CartMenuLine[] }): CartMenuLine[] {
+  return cart.items.map(({ name, quantity, price }) => ({ name, quantity, price }));
 }
 
 function wantsAddAnotherProductChoice(cleanMessage: string): boolean {
@@ -627,7 +646,11 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
       return {
         kind: "cart_continue_menu",
-        body: buildCartContinueMenuBody(`${NO_STOCK_FOR_PRODUCT} Please pick another product, or continue.`, cart.totalAmount),
+        body: buildCartContinueMenuBody({
+          items: cartLinesForContinueMenu(cart),
+          cartTotal: cart.totalAmount,
+          note: `${NO_STOCK_FOR_PRODUCT} Please pick another product, or continue.`,
+        }),
         cartTotal: cart.totalAmount,
       };
     }
@@ -645,10 +668,11 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
       return {
         kind: "cart_continue_menu",
-        body: buildCartContinueMenuBody(
-          "You already have all available units of this product in your cart.",
-          cart.totalAmount,
-        ),
+        body: buildCartContinueMenuBody({
+          items: cartLinesForContinueMenu(cart),
+          cartTotal: cart.totalAmount,
+          note: "You already have all available units of this product in your cart.",
+        }),
         cartTotal: cart.totalAmount,
       };
     }
@@ -685,7 +709,11 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
       return {
         kind: "cart_continue_menu",
-        body: buildCartContinueMenuBody(`${NO_STOCK_FOR_PRODUCT} Please pick another product, or continue.`, cart.totalAmount),
+        body: buildCartContinueMenuBody({
+          items: cartLinesForContinueMenu(cart),
+          cartTotal: cart.totalAmount,
+          note: `${NO_STOCK_FOR_PRODUCT} Please pick another product, or continue.`,
+        }),
         cartTotal: cart.totalAmount,
       };
     }
@@ -696,10 +724,11 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
       return {
         kind: "cart_continue_menu",
-        body: buildCartContinueMenuBody(
-          "You already have all available units of this product in your cart.",
-          cart.totalAmount,
-        ),
+        body: buildCartContinueMenuBody({
+          items: cartLinesForContinueMenu(cart),
+          cartTotal: cart.totalAmount,
+          note: "You already have all available units of this product in your cart.",
+        }),
         cartTotal: cart.totalAmount,
       };
     }
@@ -735,7 +764,10 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
     await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
     return {
       kind: "cart_continue_menu",
-      body: buildCartContinueMenuBody(`Added ${qty} × ${selectedProduct.name}.`, cart.totalAmount),
+      body: buildCartContinueMenuBody({
+        items: cartLinesForContinueMenu(cart),
+        cartTotal: cart.totalAmount,
+      }),
       cartTotal: cart.totalAmount,
     };
   }

@@ -1,4 +1,6 @@
 import { SignJWT, jwtVerify } from "jose";
+import { cookies } from "next/headers";
+import { NextResponse } from "next/server";
 
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "admin123";
@@ -39,5 +41,23 @@ export async function verifyAdminToken(token: string) {
   });
 
   return payload;
+}
+
+/** For Route Handlers: returns a 401 JSON response if the admin cookie is missing or invalid. */
+export async function requireAdminSession(): Promise<NextResponse | null> {
+  const jar = await cookies();
+  const token = jar.get(COOKIE_NAME)?.value;
+  if (!token) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  try {
+    const payload = await verifyAdminToken(token);
+    if (payload.sub !== "admin") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return null;
+  } catch {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 }
 

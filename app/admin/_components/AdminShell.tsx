@@ -61,6 +61,7 @@ export function AdminShell({
           <nav className="flex flex-col gap-2">
             <NavItem href="/admin/dashboard" label="Dashboard" />
             <NavItem href="/admin/orders" label="Orders" />
+            <NavItem href="/admin/products" label="Products" />
           </nav>
 
           <div className="mt-6 border-t border-border pt-4 text-xs text-zinc-500 dark:text-zinc-400">

@@ -2,7 +2,8 @@ import mongoose, { type InferSchemaType } from "mongoose";
 
 const ProductSchema = new mongoose.Schema(
   {
-    productId: { type: String, required: true, unique: true, default: () => crypto.randomUUID() },
+    /** Stable slug (e.g. mustard-oil-1l); set on create, not random UUIDs. */
+    productId: { type: String, required: true, unique: true, trim: true },
     name: { type: String, required: true, trim: true },
     description: { type: String, trim: true, default: "" },
     price: { type: Number, required: true, min: 0 },

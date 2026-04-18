@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getAdminCookieName, verifyAdminToken } from "@/lib/admin-auth";
 
-const PROTECTED_PREFIXES = ["/admin/dashboard", "/admin/orders"];
+const PROTECTED_PREFIXES = ["/admin/dashboard", "/admin/orders", "/admin/products"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -32,6 +32,6 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/admin/dashboard/:path*", "/admin/orders/:path*"],
+  matcher: ["/admin/dashboard/:path*", "/admin/orders/:path*", "/admin/products/:path*"],
 };
 

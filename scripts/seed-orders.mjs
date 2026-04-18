@@ -6,14 +6,7 @@ if (!MONGODB_URI) {
   throw new Error("Missing MONGODB_URI. Add it to .env.local first.");
 }
 
-const ORDER_STATUSES = [
-  "pending",
-  "confirmed",
-  "ready_to_ship",
-  "shipped",
-  "delivered",
-  "cancelled",
-];
+const ORDER_STATUSES = ["pending", "confirmed", "shipped", "delivered", "cancelled"];
 const PAYMENT_STATUSES = ["pending", "paid", "failed"];
 
 const FIRST_NAMES = [
