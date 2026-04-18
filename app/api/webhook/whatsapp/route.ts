@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { handleMessage, type BotReply, isQuantityMenu, isTrackOrdersMenu } from "@/lib/bot/flowHandler";
+import {
+  handleMessage,
+  type BotReply,
+  isCartContinueMenu,
+  isQuantityMenu,
+  isTrackOrdersMenu,
+} from "@/lib/bot/flowHandler";
 import { connectDB } from "@/lib/db";
 import { getAllActiveProducts } from "@/lib/services/productService";
 import { getUserByPhone } from "@/lib/services/userService";
@@ -284,6 +290,20 @@ export async function POST(req: Request) {
         }),
       });
       logger.info("whatsapp.webhook", "quantity menu sent", { phone, maxQty: max });
+    } else if (isCartContinueMenu(reply)) {
+      await sendMessage(phone, {
+        type: "menu",
+        header: "Your cart",
+        body: reply.body,
+        footer: `Total ₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(reply.cartTotal)} — tap or type 1 / 2`,
+        buttonText: "Next step",
+        sectionTitle: "Cart",
+        options: [
+          { id: "1", title: "Add another product", description: "Browse catalog again" },
+          { id: "2", title: "Continue to delivery", description: "Address & checkout" },
+        ],
+      });
+      logger.info("whatsapp.webhook", "cart continue menu sent", { phone, cartTotal: reply.cartTotal });
     } else if (typeof reply === "string" && reply.trim()) {
       if (looksLikeMainMenu(reply)) {
         await sendMainMenuInteractive(phone);

@@ -50,6 +50,45 @@ const MAX_UNITS_PER_LINE = 10;
 /** Shown when DB stock for this SKU is zero (or product inactive / missing). */
 const NO_STOCK_FOR_PRODUCT = "No stock available for this product.";
 
+function formatInrCartTotal(total: number) {
+  return `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(total)}`;
+}
+
+/** Shared copy for “add more vs go to address” (after add-to-cart or stock/cart dead-ends). */
+function buildCartContinueMenuBody(leadParagraph: string | undefined, cartTotal: number): string {
+  const totalStr = formatInrCartTotal(cartTotal);
+  const core = [
+    "What would you like to do next?",
+    "1. Add another product",
+    `2. Continue to delivery — Cart total: ${totalStr}`,
+  ].join("\n");
+  if (leadParagraph?.trim()) {
+    return `${leadParagraph.trim()}\n\n${core}`;
+  }
+  return core;
+}
+
+function wantsAddAnotherProductChoice(cleanMessage: string): boolean {
+  const t = cleanMessage.trim().toLowerCase();
+  if (t === "1") return true;
+  if (t === "add another product") return true;
+  if (/\badd\s+(another|more)\b/.test(t)) return true;
+  if (/\banother\s+product\b/.test(t)) return true;
+  if (t === "more") return true;
+  return false;
+}
+
+function wantsContinueToDeliveryChoice(cleanMessage: string): boolean {
+  const t = cleanMessage.trim().toLowerCase();
+  if (t === "2") return true;
+  if (t === "checkout" || t === "delivery" || t === "address") return true;
+  if (/\bcontinue\s+to\s+(delivery|checkout)\b/.test(t)) return true;
+  if (/\bgo\s+to\s+(checkout|delivery)\b/.test(t)) return true;
+  if (/\b(proceed|continue)\b/.test(t) && /\b(checkout|delivery|order|address)\b/.test(t)) return true;
+  if (t === "done" || t === "finish" || t === "next") return true;
+  return false;
+}
+
 async function computeAvailableUnits(userId: string, productId: string, stock: number): Promise<number> {
   const cart = await getOrCreateCart(userId);
   const inCart = cart.items.find((item) => item.productId === productId)?.quantity ?? 0;
@@ -227,7 +266,14 @@ export type BotReply =
       kind: "track_orders_menu";
       options: Array<{ id: string; title: string; description: string }>;
     }
-  | { kind: "quantity_menu"; maxQty: number; body: string };
+  | { kind: "quantity_menu"; maxQty: number; body: string }
+  | { kind: "cart_continue_menu"; body: string; cartTotal: number };
+
+export function isCartContinueMenu(
+  reply: BotReply,
+): reply is { kind: "cart_continue_menu"; body: string; cartTotal: number } {
+  return typeof reply === "object" && reply !== null && "kind" in reply && reply.kind === "cart_continue_menu";
+}
 
 export function isQuantityMenu(
   reply: BotReply,
@@ -325,13 +371,47 @@ async function showProductsAndMoveToSelect(phone: string) {
   const products = await getSelectableProducts();
 
   if (products.length === 0) {
-    await updateSession(phone, { step: "show_products" });
+    await updateSession(phone, { currentFlow: "order", step: "show_products" });
     return withMenuHint("No products available right now. Please try again later.");
   }
 
-  await updateSession(phone, { step: "select_product" });
+  await updateSession(phone, { currentFlow: "order", step: "select_product" });
 
   return withMenuHint(`Available products:\n${formatProductList(products)}\n\nChoose a product from the list.`);
+}
+
+type UserForDelivery = {
+  userId: string;
+  addresses?: Array<{
+    line1: string;
+    city: string;
+    postalCode: string;
+    state?: string;
+    country?: string;
+    line2?: string;
+    geolocation?: GeoCoordinates | null;
+  }>;
+};
+
+async function proceedToDeliveryAfterCart(
+  phone: string,
+  user: UserForDelivery,
+  cart: Awaited<ReturnType<typeof getOrCreateCart>>,
+): Promise<BotReply | string> {
+  if (!cart.items.length) {
+    await updateSession(phone, { currentFlow: "order", step: "show_products", tempData: {} });
+    return showProductsAndMoveToSelect(phone);
+  }
+
+  const totalFmt = formatInrCartTotal(cart.totalAmount);
+  const savedAddresses = user.addresses ?? [];
+  if (savedAddresses.length === 0) {
+    await startAddressCollection(phone, {}, "checkout_new");
+    return `Cart total: ${totalFmt}.\n\n${addressFullLinePrompt()}`;
+  }
+
+  await updateSession(phone, { currentFlow: "order", step: "address_selection", tempData: {} });
+  return `Cart total: ${totalFmt}.\n\n${addressSelectionText(savedAddresses)}`;
 }
 
 async function setSessionAndReply(phone: string, updates: SessionUpdates, text: string) {
@@ -543,8 +623,13 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
 
     const fresh = await getActiveProductByProductId(picked.productId);
     if (!fresh || !fresh.stock || fresh.stock < 1) {
-      await updateSession(phone, { step: "select_product" });
-      return withMenuHint(`${NO_STOCK_FOR_PRODUCT} Please choose another from the list.`);
+      const cart = await getOrCreateCart(user.userId);
+      await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
+      return {
+        kind: "cart_continue_menu",
+        body: buildCartContinueMenuBody(`${NO_STOCK_FOR_PRODUCT} Please pick another product, or continue.`, cart.totalAmount),
+        cartTotal: cart.totalAmount,
+      };
     }
 
     const selectedProduct: OrderProduct = {
@@ -556,9 +641,16 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
 
     const maxQuantity = await computeAvailableUnits(user.userId, selectedProduct.productId, selectedProduct.stock);
     if (maxQuantity <= 0) {
-      return withMenuHint(
-        "You already have all available units of this product in your cart. Choose another product or finish checkout from the menu.",
-      );
+      const cart = await getOrCreateCart(user.userId);
+      await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
+      return {
+        kind: "cart_continue_menu",
+        body: buildCartContinueMenuBody(
+          "You already have all available units of this product in your cart.",
+          cart.totalAmount,
+        ),
+        cartTotal: cart.totalAmount,
+      };
     }
 
     const tempData = readTempData(session.tempData);
@@ -589,16 +681,27 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
 
     const fresh = await getActiveProductByProductId(selectedProduct.productId);
     if (!fresh || !fresh.stock || fresh.stock < 1) {
-      await updateSession(phone, { step: "show_products" });
-      return withMenuHint(`${NO_STOCK_FOR_PRODUCT} Please choose another product from the list.`);
+      const cart = await getOrCreateCart(user.userId);
+      await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
+      return {
+        kind: "cart_continue_menu",
+        body: buildCartContinueMenuBody(`${NO_STOCK_FOR_PRODUCT} Please pick another product, or continue.`, cart.totalAmount),
+        cartTotal: cart.totalAmount,
+      };
     }
 
     maxQty = await computeAvailableUnits(user.userId, selectedProduct.productId, fresh.stock);
     if (maxQty <= 0) {
-      await updateSession(phone, { step: "show_products" });
-      return withMenuHint(
-        "You already have all available units of this product in your cart. Choose another product or finish checkout from the menu.",
-      );
+      const cart = await getOrCreateCart(user.userId);
+      await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
+      return {
+        kind: "cart_continue_menu",
+        body: buildCartContinueMenuBody(
+          "You already have all available units of this product in your cart.",
+          cart.totalAmount,
+        ),
+        cartTotal: cart.totalAmount,
+      };
     }
 
     const qty = parseQuantity(cleanMessage, maxQty);
@@ -629,18 +732,29 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       return "Could not add item to cart. Please try again.";
     }
 
-    const savedAddresses = user.addresses ?? [];
-    if (savedAddresses.length === 0) {
-      await startAddressCollection(phone, {}, "checkout_new");
-      return `Added ${qty} x ${selectedProduct.name}.\nCart total: ₹${new Intl.NumberFormat("en-IN").format(
-        cart.totalAmount,
-      )}\n\n${addressFullLinePrompt()}`;
+    await updateSession(phone, { currentFlow: "order", step: "choose_add_or_checkout", tempData: {} });
+    return {
+      kind: "cart_continue_menu",
+      body: buildCartContinueMenuBody(`Added ${qty} × ${selectedProduct.name}.`, cart.totalAmount),
+      cartTotal: cart.totalAmount,
+    };
+  }
+
+  if (session.step === "choose_add_or_checkout") {
+    const cart = await getOrCreateCart(user.userId);
+
+    if (wantsAddAnotherProductChoice(cleanMessage)) {
+      await updateSession(phone, { currentFlow: "order", step: "select_product", tempData: {} });
+      return showProductsAndMoveToSelect(phone);
     }
 
-    await updateSession(phone, { step: "address_selection", tempData: {} });
-    return `Added ${qty} x ${selectedProduct.name}.\nCart total: ₹${new Intl.NumberFormat("en-IN").format(
-      cart.totalAmount,
-    )}\n\n${addressSelectionText(savedAddresses)}`;
+    if (wantsContinueToDeliveryChoice(cleanMessage)) {
+      return proceedToDeliveryAfterCart(phone, user, cart);
+    }
+
+    return withMenuHint(
+      `Reply *1* to add another product, or *2* to continue to delivery.\n\nCart total: ${formatInrCartTotal(cart.totalAmount)}.`,
+    );
   }
 
   if (session.step === "address_selection") {
