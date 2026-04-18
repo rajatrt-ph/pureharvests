@@ -9,6 +9,15 @@ export async function getAllActiveProducts() {
     .lean();
 }
 
+/** Current stock for cart / quantity limits (same catalog id as cart line items). */
+export async function getActiveProductByProductId(productId: string) {
+  const id = productId.trim();
+  if (!id) return null;
+
+  await connectDB();
+  return ProductModel.findOne({ productId: id, isActive: true }).select("productId name price stock").lean();
+}
+
 function formatPriceINR(value: number) {
   return `₹${new Intl.NumberFormat("en-IN", {
     maximumFractionDigits: 0,

@@ -11,7 +11,7 @@ import {
 } from "@/lib/services/orderService";
 import { buildTrackOrderListRow, formatTrackOrderDetailFromOrder } from "@/lib/whatsapp/trackOrderCopy";
 import { buildAddressFromPinAndGeocode } from "@/lib/services/geocodingService";
-import { formatProductList, getAllActiveProducts } from "@/lib/services/productService";
+import { formatProductList, getActiveProductByProductId, getAllActiveProducts } from "@/lib/services/productService";
 import {
   getSession,
   resetSession,
@@ -41,7 +41,22 @@ type OrderProduct = {
   productId: string;
   name: string;
   price: number;
+  /** Stock on hand when the user picked the product (refreshed again at quantity step). */
+  stock: number;
 };
+
+const MAX_UNITS_PER_LINE = 10;
+
+/** Shown when DB stock for this SKU is zero (or product inactive / missing). */
+const NO_STOCK_FOR_PRODUCT = "No stock available for this product.";
+
+async function computeAvailableUnits(userId: string, productId: string, stock: number): Promise<number> {
+  const cart = await getOrCreateCart(userId);
+  const inCart = cart.items.find((item) => item.productId === productId)?.quantity ?? 0;
+  const remaining = stock - inCart;
+  if (remaining <= 0) return 0;
+  return Math.min(MAX_UNITS_PER_LINE, remaining);
+}
 
 const CANCEL_WORDS = new Set(["cancel", "stop", "exit", "quit"]);
 
@@ -49,13 +64,13 @@ function withMenuHint(text: string) {
   return `${text}\n\nType "menu" for main menu or "cancel" to stop.`;
 }
 
-function parseQuantity(input: string) {
+function parseQuantity(input: string, maxQty = MAX_UNITS_PER_LINE) {
+  const cap = Math.max(1, Math.min(MAX_UNITS_PER_LINE, maxQty));
   const trimmed = input.trim().toLowerCase();
   const qtyMatch = /^qty:(\d{1,2})$/.exec(trimmed);
-  if (qtyMatch) {
-    return Number.parseInt(qtyMatch[1], 10);
-  }
-  return parseSelection(input);
+  const n = qtyMatch ? Number.parseInt(qtyMatch[1], 10) : parseSelection(input);
+  if (!Number.isInteger(n) || n <= 0 || n > cap) return NaN;
+  return n;
 }
 
 function menuText(_name?: string) {
@@ -211,7 +226,14 @@ export type BotReply =
   | {
       kind: "track_orders_menu";
       options: Array<{ id: string; title: string; description: string }>;
-    };
+    }
+  | { kind: "quantity_menu"; maxQty: number; body: string };
+
+export function isQuantityMenu(
+  reply: BotReply,
+): reply is { kind: "quantity_menu"; maxQty: number; body: string } {
+  return typeof reply === "object" && reply !== null && "kind" in reply && reply.kind === "quantity_menu";
+}
 
 export function isTrackOrdersMenu(
   reply: BotReply,
@@ -295,6 +317,7 @@ async function getSelectableProducts(): Promise<OrderProduct[]> {
     productId: p.productId,
     name: p.name,
     price: p.price,
+    stock: typeof p.stock === "number" ? p.stock : 0,
   }));
 }
 
@@ -513,38 +536,87 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       Number.isInteger(selectedIndex) && selectedIndex >= 0 && selectedIndex < products.length
         ? products[selectedIndex]
         : undefined;
-    const selectedProduct = byId ?? byIndex;
-    if (!selectedProduct) {
+    const picked = byId ?? byIndex;
+    if (!picked) {
       return withMenuHint("Invalid product selection. Please choose a product from the list.");
     }
+
+    const fresh = await getActiveProductByProductId(picked.productId);
+    if (!fresh || !fresh.stock || fresh.stock < 1) {
+      await updateSession(phone, { step: "select_product" });
+      return withMenuHint(`${NO_STOCK_FOR_PRODUCT} Please choose another from the list.`);
+    }
+
+    const selectedProduct: OrderProduct = {
+      productId: fresh.productId,
+      name: fresh.name,
+      price: fresh.price,
+      stock: fresh.stock,
+    };
+
+    const maxQuantity = await computeAvailableUnits(user.userId, selectedProduct.productId, selectedProduct.stock);
+    if (maxQuantity <= 0) {
+      return withMenuHint(
+        "You already have all available units of this product in your cart. Choose another product or finish checkout from the menu.",
+      );
+    }
+
     const tempData = readTempData(session.tempData);
     await updateSession(phone, {
       step: "ask_quantity",
-      tempData: { ...tempData, selectedProduct },
+      tempData: { ...tempData, selectedProduct, maxQuantity },
     });
 
-    return `Selected: ${selectedProduct.name} (${formatProductList([selectedProduct]).replace(
-      "1. ",
-      "",
-    )})\n\nChoose quantity from the list (1 to 10).`;
+    const summary = `Selected: ${selectedProduct.name} (${formatProductList([selectedProduct]).replace("1. ", "")})`;
+    const body = `${summary}\n\nChoose quantity from the list (1 to ${maxQuantity}).`;
+
+    return { kind: "quantity_menu", maxQty: maxQuantity, body };
   }
 
   if (session.step === "ask_quantity") {
-    const qty = parseQuantity(cleanMessage);
-    if (!Number.isInteger(qty) || qty <= 0 || qty > 10) {
-      return "Invalid quantity. Please choose quantity from 1 to 10.";
-    }
-
     const tempData = readTempData(session.tempData);
     const selectedProduct = tempData.selectedProduct as OrderProduct | undefined;
+    const sessionMax = tempData.maxQuantity;
+    let maxQty =
+      typeof sessionMax === "number" && Number.isInteger(sessionMax) && sessionMax > 0
+        ? Math.min(MAX_UNITS_PER_LINE, sessionMax)
+        : MAX_UNITS_PER_LINE;
+
     if (!selectedProduct) {
       await updateSession(phone, { step: "show_products" });
       return showProductsAndMoveToSelect(phone);
     }
 
+    const fresh = await getActiveProductByProductId(selectedProduct.productId);
+    if (!fresh || !fresh.stock || fresh.stock < 1) {
+      await updateSession(phone, { step: "show_products" });
+      return withMenuHint(`${NO_STOCK_FOR_PRODUCT} Please choose another product from the list.`);
+    }
+
+    maxQty = await computeAvailableUnits(user.userId, selectedProduct.productId, fresh.stock);
+    if (maxQty <= 0) {
+      await updateSession(phone, { step: "show_products" });
+      return withMenuHint(
+        "You already have all available units of this product in your cart. Choose another product or finish checkout from the menu.",
+      );
+    }
+
+    const qty = parseQuantity(cleanMessage, maxQty);
+    if (!Number.isInteger(qty)) {
+      return `Invalid quantity. Please choose a number from 1 to ${maxQty}.`;
+    }
+
     let cart;
     try {
-      await addItemToCart(user.userId, selectedProduct, qty);
+      await addItemToCart(
+        user.userId,
+        {
+          productId: selectedProduct.productId,
+          name: selectedProduct.name,
+          price: fresh.price,
+        },
+        qty,
+      );
       cart = await getOrCreateCart(user.userId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown";

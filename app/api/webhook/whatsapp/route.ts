@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { handleMessage, type BotReply, isTrackOrdersMenu } from "@/lib/bot/flowHandler";
+import { handleMessage, type BotReply, isQuantityMenu, isTrackOrdersMenu } from "@/lib/bot/flowHandler";
 import { connectDB } from "@/lib/db";
 import { getAllActiveProducts } from "@/lib/services/productService";
 import { getUserByPhone } from "@/lib/services/userService";
@@ -161,7 +161,11 @@ function looksLikeProductPrompt(reply: string) {
 
 function looksLikeQuantityPrompt(reply: string) {
   const normalized = reply.toLowerCase();
-  return normalized.includes("selected:") && normalized.includes("choose quantity from the list (1 to 10)");
+  return (
+    normalized.includes("selected:") &&
+    normalized.includes("choose quantity from the list") &&
+    /\(\d{1,2} to \d{1,2}\)/.test(normalized)
+  );
 }
 
 function looksLikeAddressActionPrompt(reply: string) {
@@ -261,6 +265,25 @@ export async function POST(req: Request) {
         options: reply.options,
       });
       logger.info("whatsapp.webhook", "track orders menu sent", { phone, count: reply.options.length });
+    } else if (isQuantityMenu(reply)) {
+      const max = Math.min(10, Math.max(1, reply.maxQty));
+      await sendMessage(phone, {
+        type: "menu",
+        header: "Pure Harvest",
+        body: reply.body,
+        footer: max < 10 ? `Up to ${max} unit(s) available now` : "Up to 10 units per line",
+        buttonText: "Select Quantity",
+        sectionTitle: `Quantity (1–${max})`,
+        options: Array.from({ length: max }, (_, idx) => {
+          const qty = idx + 1;
+          return {
+            id: `qty:${qty}`,
+            title: `${qty}`,
+            description: qty === 1 ? "1 unit" : `${qty} units`,
+          };
+        }),
+      });
+      logger.info("whatsapp.webhook", "quantity menu sent", { phone, maxQty: max });
     } else if (typeof reply === "string" && reply.trim()) {
       if (looksLikeMainMenu(reply)) {
         await sendMainMenuInteractive(phone);
