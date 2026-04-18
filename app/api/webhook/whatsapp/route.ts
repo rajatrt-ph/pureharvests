@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import {
   handleMessage,
   type BotReply,
+  isAddressActionMenu,
+  isAddressPickMenu,
   isCartContinueMenu,
   isQuantityMenu,
   isTrackOrdersMenu,
@@ -304,6 +306,32 @@ export async function POST(req: Request) {
         ],
       });
       logger.info("whatsapp.webhook", "cart continue menu sent", { phone, cartTotal: reply.cartTotal });
+    } else if (isAddressActionMenu(reply)) {
+      await sendMessage(phone, {
+        type: "menu",
+        header: "Delivery address",
+        body: reply.body,
+        footer: "Tap an option — or send cancel",
+        buttonText: "Choose",
+        sectionTitle: "Options",
+        options: [
+          { id: "1", title: "Use existing address", description: "Pick from saved list" },
+          { id: "2", title: "Add new address", description: "Type or send a pin next" },
+          { id: "3", title: "Edit saved address", description: "Update one you saved" },
+        ],
+      });
+      logger.info("whatsapp.webhook", "address action menu sent", { phone });
+    } else if (isAddressPickMenu(reply)) {
+      await sendMessage(phone, {
+        type: "menu",
+        header: reply.purpose === "edit" ? "Edit address" : "Your addresses",
+        body: reply.body,
+        footer: "Tap a row below",
+        buttonText: reply.purpose === "edit" ? "Pick to edit" : "Select address",
+        sectionTitle: "Saved",
+        options: reply.options,
+      });
+      logger.info("whatsapp.webhook", "address pick menu sent", { phone, purpose: reply.purpose });
     } else if (typeof reply === "string" && reply.trim()) {
       if (looksLikeMainMenu(reply)) {
         await sendMainMenuInteractive(phone);

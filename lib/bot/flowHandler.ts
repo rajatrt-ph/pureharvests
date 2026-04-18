@@ -179,21 +179,55 @@ function formatAddressLine(address: {
   return pickGeo(address) ? `${line} 📍` : line;
 }
 
-function addressSelectionText(addresses: Array<{
+type SavedAddressRow = {
   line1: string;
   city: string;
   postalCode: string;
   state?: string;
   country?: string;
   geolocation?: GeoCoordinates | null;
-}>) {
-  if (addresses.length === 0) {
-    return `No saved addresses yet.\nSend one line with commas — ${addressCommaFormatSummary()} — or a map pin 📍.`;
-  }
+};
 
-  return `Choose address option:\n1. Use existing address\n2. Add new address\n3. Edit existing address\n\nSaved addresses:\n${addresses
-    .map((addr, idx) => `${idx + 1}. ${formatAddressLine(addr)}`)
-    .join("\n")}`;
+/** WhatsApp list row limits: title 24, description 72 (approx). */
+function buildAddressPickMenuOptions(addresses: SavedAddressRow[]) {
+  return addresses.slice(0, 10).map((addr, idx) => {
+    const line = formatAddressLine(addr);
+    return {
+      id: `addr:${idx}`,
+      title: `Address ${idx + 1}`.slice(0, 24),
+      description: line.slice(0, 72),
+    };
+  });
+}
+
+/** List id `addr:0` or typed digit 1…N (1-based). Returns 0-based index or null. */
+function parseAddressListSelection(input: string, length: number): number | null {
+  const t = input.trim();
+  const m = /^addr:(\d+)$/i.exec(t);
+  if (m) {
+    const i = Number.parseInt(m[1], 10);
+    if (Number.isInteger(i) && i >= 0 && i < length) return i;
+    return null;
+  }
+  const n = Number.parseInt(t, 10);
+  if (Number.isInteger(n) && n >= 1 && n <= length) return n - 1;
+  return null;
+}
+
+function buildAddressActionMenuBody(addresses: SavedAddressRow[], cartTotalLine?: string) {
+  const n = addresses.length;
+  const preview =
+    n === 0
+      ? ""
+      : n <= 4
+        ? addresses.map((a) => `• ${formatAddressLine(a)}`).join("\n")
+        : `You have ${n} saved addresses — tap *Use existing* to pick one on the next screen.`;
+  const parts = [
+    cartTotalLine,
+    preview,
+    "Choose an option below.",
+  ].filter((p) => p && String(p).trim().length > 0);
+  return parts.join("\n\n").slice(0, 1000);
 }
 
 function parseSelection(input: string) {
@@ -286,7 +320,16 @@ export type BotReply =
       options: Array<{ id: string; title: string; description: string }>;
     }
   | { kind: "quantity_menu"; maxQty: number; body: string }
-  | { kind: "cart_continue_menu"; body: string; cartTotal: number };
+  | { kind: "cart_continue_menu"; body: string; cartTotal: number }
+  /** Delivery step: Use existing / Add new / Edit (list ids 1–3). */
+  | { kind: "address_action_menu"; body: string }
+  /** Pick which saved address (list ids addr:0 …). */
+  | {
+      kind: "address_pick_menu";
+      purpose: "use" | "edit";
+      body: string;
+      options: Array<{ id: string; title: string; description: string }>;
+    };
 
 export function isCartContinueMenu(
   reply: BotReply,
@@ -304,6 +347,23 @@ export function isTrackOrdersMenu(
   reply: BotReply,
 ): reply is { kind: "track_orders_menu"; options: Array<{ id: string; title: string; description: string }> } {
   return typeof reply === "object" && reply !== null && "kind" in reply && reply.kind === "track_orders_menu";
+}
+
+export function isAddressActionMenu(
+  reply: BotReply,
+): reply is { kind: "address_action_menu"; body: string } {
+  return typeof reply === "object" && reply !== null && "kind" in reply && reply.kind === "address_action_menu";
+}
+
+export function isAddressPickMenu(
+  reply: BotReply,
+): reply is {
+  kind: "address_pick_menu";
+  purpose: "use" | "edit";
+  body: string;
+  options: Array<{ id: string; title: string; description: string }>;
+} {
+  return typeof reply === "object" && reply !== null && "kind" in reply && reply.kind === "address_pick_menu";
 }
 
 function isValidPostalCode(value: string) {
@@ -353,16 +413,20 @@ async function finalizeAddressCollection(
   built: OrderAddressInput,
   collectFor: AddressCollectFor,
   editIndex: number,
-) {
+): Promise<BotReply | string> {
   if (collectFor === "edit" && editIndex >= 0) {
     const updatedUser = await updateUserAddressAtIndex(user.userId, editIndex, built);
     await updateSession(phone, {
       step: "address_selection",
       tempData: { addressSelectionMode: "use_pick" },
     });
-    return withMenuHint(`Address updated.\nNow choose an address:\n${(updatedUser?.addresses ?? [])
-      .map((addr, idx) => `${idx + 1}. ${formatAddressLine(addr)}`)
-      .join("\n")}`);
+    const addrs = (updatedUser?.addresses ?? []) as SavedAddressRow[];
+    return {
+      kind: "address_pick_menu",
+      purpose: "use",
+      body: "Address updated.\nNow choose a delivery address:",
+      options: buildAddressPickMenuOptions(addrs),
+    };
   }
 
   await updateUserAddress(user.userId, built);
@@ -430,15 +494,13 @@ async function proceedToDeliveryAfterCart(
   }
 
   await updateSession(phone, { currentFlow: "order", step: "address_selection", tempData: {} });
-  return `Cart total: ${totalFmt}.\n\n${addressSelectionText(savedAddresses)}`;
+  return {
+    kind: "address_action_menu",
+    body: buildAddressActionMenuBody(savedAddresses as SavedAddressRow[], `Cart total: ${totalFmt}`),
+  };
 }
 
-async function setSessionAndReply(phone: string, updates: SessionUpdates, text: string) {
-  await updateSession(phone, updates);
-  return text;
-}
-
-export async function handleMessage(phone: string, message: IncomingMessage): Promise<BotReply> {
+export async function handleMessage(phone: string, message: IncomingMessage): Promise<BotReply | string> {
   if (!isValidPhone(phone)) {
     logger.warn("bot.flow", "invalid phone received", { phone });
     return "Invalid phone number.";
@@ -535,7 +597,12 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
 
     if (!collectFor) {
       await updateSession(phone, { step: "address_selection", tempData: {} });
-      return addressSelectionText(user.addresses ?? []);
+      const addrs = (user.addresses ?? []) as SavedAddressRow[];
+      if (addrs.length === 0) return addressFullLinePrompt();
+      return {
+        kind: "address_action_menu",
+        body: buildAddressActionMenuBody(addrs),
+      };
     }
 
     if (location) {
@@ -795,14 +862,17 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
     const mode = typeof tempData.addressSelectionMode === "string" ? tempData.addressSelectionMode : "";
 
     if (mode === "use_pick") {
-      const choice = parseSelection(cleanMessage);
-      if (!Number.isInteger(choice) || choice <= 0 || choice > addresses.length) {
-      return withMenuHint(`Invalid selection.\nChoose an address number:\n${addresses
-          .map((addr, idx) => `${idx + 1}. ${formatAddressLine(addr)}`)
-          .join("\n")}`);
+      const idx = parseAddressListSelection(cleanMessage, addresses.length);
+      if (idx === null) {
+        return {
+          kind: "address_pick_menu",
+          purpose: "use",
+          body: "That wasn't a valid choice.\nPick a delivery address:",
+          options: buildAddressPickMenuOptions(addresses as SavedAddressRow[]),
+        };
       }
 
-      const selectedAddress = toAddressInput(addresses[choice - 1]);
+      const selectedAddress = toAddressInput(addresses[idx]);
       const cart = await getOrCreateCart(user.userId);
       await updateSession(phone, {
         step: "checkout",
@@ -819,17 +889,20 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
     }
 
     if (mode === "edit_pick") {
-      const choice = parseSelection(cleanMessage);
-      if (!Number.isInteger(choice) || choice <= 0 || choice > addresses.length) {
-        return withMenuHint(`Invalid selection.\nChoose address number to edit:\n${addresses
-          .map((addr, idx) => `${idx + 1}. ${formatAddressLine(addr)}`)
-          .join("\n")}`);
+      const idx = parseAddressListSelection(cleanMessage, addresses.length);
+      if (idx === null) {
+        return {
+          kind: "address_pick_menu",
+          purpose: "edit",
+          body: "That wasn't a valid choice.\nPick an address to edit:",
+          options: buildAddressPickMenuOptions(addresses as SavedAddressRow[]),
+        };
       }
 
-      await startAddressCollection(phone, readTempData(session.tempData), "edit", choice - 1);
+      await startAddressCollection(phone, readTempData(session.tempData), "edit", idx);
       return withMenuHint(
         [
-          `You're editing saved address ${choice}.`,
+          `You're editing saved address ${idx + 1}.`,
           `Send one line: ${addressCommaFormatSummary()}`,
           "",
           "Example: 12 MG Road, Bengaluru, 560001, Karnataka, India",
@@ -845,28 +918,26 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
     }
 
     if (cleanMessage === "1") {
-      return withMenuHint(
-        await setSessionAndReply(
-        phone,
-        { step: "address_selection", tempData: { addressSelectionMode: "use_pick" } },
-        `Choose an address number:\n${addresses.map((addr, idx) => `${idx + 1}. ${formatAddressLine(addr)}`).join("\n")}`,
-        ),
-      );
+      await updateSession(phone, { step: "address_selection", tempData: { addressSelectionMode: "use_pick" } });
+      return {
+        kind: "address_pick_menu",
+        purpose: "use",
+        body: "Choose a delivery address:",
+        options: buildAddressPickMenuOptions(addresses as SavedAddressRow[]),
+      };
     }
     if (cleanMessage === "2") {
       await startAddressCollection(phone, {}, "checkout_add");
       return addressFullLinePrompt();
     }
     if (cleanMessage === "3") {
-      return withMenuHint(
-        await setSessionAndReply(
-        phone,
-        { step: "address_selection", tempData: { addressSelectionMode: "edit_pick" } },
-        `Choose address number to edit:\n${addresses
-          .map((addr, idx) => `${idx + 1}. ${formatAddressLine(addr)}`)
-          .join("\n")}`,
-        ),
-      );
+      await updateSession(phone, { step: "address_selection", tempData: { addressSelectionMode: "edit_pick" } });
+      return {
+        kind: "address_pick_menu",
+        purpose: "edit",
+        body: "Choose an address to edit:",
+        options: buildAddressPickMenuOptions(addresses as SavedAddressRow[]),
+      };
     }
 
     const parsedDirect = parseAddress(cleanMessage);
@@ -882,7 +953,10 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       )}\nReply yes to confirm or no to cancel.`);
     }
 
-    return addressSelectionText(addresses);
+    return {
+      kind: "address_action_menu",
+      body: buildAddressActionMenuBody(addresses as SavedAddressRow[]),
+    };
   }
 
   if (session.step === "checkout") {
@@ -891,12 +965,22 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
 
     if (!address) {
       await updateSession(phone, { step: "address_selection", tempData: {} });
-      return addressSelectionText(user.addresses ?? []);
+      const addrs = (user.addresses ?? []) as SavedAddressRow[];
+      if (addrs.length === 0) {
+        await startAddressCollection(phone, readTempData(session.tempData), "checkout_new");
+        return addressFullLinePrompt();
+      }
+      const cart = await getOrCreateCart(user.userId);
+      return {
+        kind: "address_action_menu",
+        body: buildAddressActionMenuBody(addrs, `Cart total: ${formatInrCartTotal(cart.totalAmount)}`),
+      };
     }
 
     if (["no", "n"].includes(lowered)) {
       await resetSession(phone);
-      return `Order cancelled.\n\n${menuText(user.name)}`;
+      logger.info("bot.flow", "order cancelled at checkout", { phone });
+      return { kind: "goodbye_template", name: user.name?.trim() || "there" };
     }
 
     if (!["yes", "y", "confirm"].includes(lowered)) {
