@@ -69,6 +69,7 @@ export async function createPaymentLink(order: CreatePaymentLinkInput) {
   }
 
   await connectDB();
+  // Same row as first checkout: one Payment per `orderId`, overwrite link id when user pays again from Track.
   await PaymentModel.findOneAndUpdate(
     { orderId: order.orderId },
     {

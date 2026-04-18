@@ -79,7 +79,13 @@ function orderRef(order: Order & { _id?: { toString(): string } }) {
 }
 
 /** Detail text for Track — uses admin `Order` document (same as dashboard). */
-export function formatTrackOrderDetailFromOrder(order: Order & { _id?: { toString(): string } }) {
+export function formatTrackOrderDetailFromOrder(
+  order: Order & { _id?: { toString(): string } },
+  options?: {
+    /** Shown when a payment CTA is sent below this message. */
+    payCtaHint?: "pending" | "failed";
+  },
+) {
   const lines: string[] = [];
   lines.push(`*Order ${orderRef(order)}*`);
   lines.push("");
@@ -99,7 +105,13 @@ export function formatTrackOrderDetailFromOrder(order: Order & { _id?: { toStrin
   lines.push("*Delivery*");
   lines.push(order.address?.trim() || "—");
   lines.push("");
-  lines.push('Reply *menu* for options or *cancel* to stop.');
+  if (options?.payCtaHint === "failed") {
+    lines.push("Tap *Retry payment* below to try again. Reply *menu* or *cancel*.");
+  } else if (options?.payCtaHint === "pending") {
+    lines.push("Tap *Pay now* below to complete payment. Reply *menu* or *cancel*.");
+  } else {
+    lines.push('Reply *menu* for options or *cancel* to stop.');
+  }
 
   return lines.join("\n");
 }

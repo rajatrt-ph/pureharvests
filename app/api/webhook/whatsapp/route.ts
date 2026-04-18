@@ -26,7 +26,17 @@ function isWelcomeThenMenu(reply: BotReply): reply is { kind: "welcome_then_menu
   return typeof reply === "object" && reply !== null && "kind" in reply && reply.kind === "welcome_then_menu";
 }
 
-function isPaymentLinkCta(reply: BotReply): reply is { kind: "payment_link_cta"; orderId: string; payUrl: string } {
+function isPaymentLinkCta(
+  reply: BotReply,
+): reply is {
+  kind: "payment_link_cta";
+  orderId: string;
+  payUrl: string;
+  body?: string;
+  header?: string;
+  footer?: string;
+  buttonText?: string;
+} {
   return typeof reply === "object" && reply !== null && "kind" in reply && reply.kind === "payment_link_cta";
 }
 
@@ -254,12 +264,17 @@ export async function POST(req: Request) {
       await sendWelcomeThenMenu(phone, reply.name);
       logger.info("whatsapp.webhook", "welcome then menu sent", { phone });
     } else if (isPaymentLinkCta(reply)) {
+      const defaultBody = `Order ${reply.orderId} is ready.\n\nTap the button below to complete payment with Razorpay. You'll get a confirmation here once it's paid.`;
+      const hasCustomBody = Boolean(reply.body?.trim());
+      const bodyText = reply.body?.trim() || defaultBody;
+      const headerText =
+        reply.header?.trim() ?? (hasCustomBody ? undefined : "Secure checkout");
       await sendMessage(phone, {
         type: "cta_url",
-        header: "Secure checkout",
-        body: `Order ${reply.orderId} is ready.\n\nTap the button below to complete payment with Razorpay. You'll get a confirmation here once it's paid.`,
-        footer: "Pure Harvests",
-        buttonText: "Pay now",
+        ...(headerText ? { header: headerText } : {}),
+        body: bodyText,
+        footer: reply.footer ?? "Pure Harvests",
+        buttonText: reply.buttonText?.trim() || "Pay now",
         url: reply.payUrl,
       });
       logger.info("whatsapp.webhook", "payment link CTA sent", { phone, orderId: reply.orderId });

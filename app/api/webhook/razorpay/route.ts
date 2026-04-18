@@ -133,6 +133,7 @@ export async function POST(req: Request) {
       amountToStore = existingOrder?.orderValue ?? 0;
     }
 
+    // One Payment doc per `orderId` (initial or retry link); webhook merges latest Razorpay ids + status.
     await PaymentModel.findOneAndUpdate(
       { orderId },
       {

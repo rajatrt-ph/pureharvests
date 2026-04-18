@@ -54,6 +54,18 @@ function formatInrCartTotal(total: number) {
   return `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(total)}`;
 }
 
+function paymentLinkShortUrl(data: unknown): string {
+  if (
+    typeof data === "object" &&
+    data !== null &&
+    "short_url" in data &&
+    typeof (data as { short_url?: unknown }).short_url === "string"
+  ) {
+    return (data as { short_url: string }).short_url;
+  }
+  return "";
+}
+
 type CartMenuLine = { name: string; quantity: number; price: number };
 
 function formatCartItemsBlock(items: CartMenuLine[]): string {
@@ -314,7 +326,16 @@ export type BotReply =
   | string
   | { kind: "goodbye_template"; name: string }
   | { kind: "welcome_then_menu"; name?: string }
-  | { kind: "payment_link_cta"; orderId: string; payUrl: string }
+  | {
+      kind: "payment_link_cta";
+      orderId: string;
+      payUrl: string;
+      /** Full message body (e.g. track order detail). Defaults to checkout copy in webhook. */
+      body?: string;
+      header?: string;
+      footer?: string;
+      buttonText?: string;
+    }
   | {
       kind: "track_orders_menu";
       options: Array<{ id: string; title: string; description: string }>;
@@ -681,9 +702,51 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
         );
       }
 
-      const detail = formatTrackOrderDetailFromOrder(order);
       await resetSession(phone);
-      return detail;
+
+      const businessId =
+        typeof order.businessOrderId === "string" ? order.businessOrderId.trim() : "";
+      const paymentNeedsRetry =
+        (order.paymentStatus === "pending" || order.paymentStatus === "failed") &&
+        businessId.length > 0 &&
+        typeof order.orderValue === "number" &&
+        order.orderValue > 0;
+
+      if (paymentNeedsRetry) {
+        const payCtaHint = order.paymentStatus === "failed" ? ("failed" as const) : ("pending" as const);
+        const buttonText = order.paymentStatus === "failed" ? "Retry payment" : "Pay now";
+        try {
+          const paymentLink = await createPaymentLink({
+            orderId: businessId,
+            userId: user.userId,
+            totalAmount: order.orderValue,
+            phone: user.phone,
+            name: user.name?.trim() || order.customerName,
+            description: `Payment for order ${businessId}`,
+          });
+          const link = paymentLinkShortUrl(paymentLink);
+          if (link) {
+            logger.info("bot.flow", "track order payment link generated", { phone, orderId: businessId });
+            return {
+              kind: "payment_link_cta",
+              orderId: businessId,
+              payUrl: link,
+              body: formatTrackOrderDetailFromOrder(order, { payCtaHint }),
+              buttonText,
+              footer: "Pure Harvests",
+            };
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "unknown";
+          logger.error("bot.flow", "track order payment link failed", {
+            phone,
+            orderId: businessId,
+            error: message,
+          });
+        }
+      }
+
+      return formatTrackOrderDetailFromOrder(order);
     }
 
     return beginTrackOrderFlow(phone, user);
@@ -1015,13 +1078,7 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       return "Could not create order right now. Please try again later.";
     }
 
-    const link =
-      typeof paymentLink === "object" &&
-      paymentLink &&
-      "short_url" in paymentLink &&
-      typeof paymentLink.short_url === "string"
-        ? paymentLink.short_url
-        : "";
+    const link = paymentLinkShortUrl(paymentLink);
 
     await resetSession(phone);
     logger.info("bot.flow", "order created", { phone, orderId: order.orderId });
