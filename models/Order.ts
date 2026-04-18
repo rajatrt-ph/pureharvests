@@ -2,6 +2,8 @@ import mongoose, { type InferSchemaType } from "mongoose";
 
 const OrderItemSchema = new mongoose.Schema(
   {
+    /** Catalog id — used to decrement `Product.stock` when payment succeeds. */
+    productId: { type: String, trim: true, default: "" },
     productName: { type: String, required: true, trim: true },
     quantity: { type: Number, required: true, min: 1 },
     price: { type: Number, required: true, min: 0 },

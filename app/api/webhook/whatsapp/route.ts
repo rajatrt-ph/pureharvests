@@ -188,20 +188,32 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
   const mode = searchParams.get("hub.mode");
-  const token = searchParams.get("hub.verify_token");
+  const token = searchParams.get("hub.verify_token")?.trim() ?? "";
   const challenge = searchParams.get("hub.challenge");
 
-  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN ?? "";
-  const isValid = mode === "subscribe" && token && verifyToken && token === verifyToken;
+  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN?.trim() ?? "";
+  const isValid = mode === "subscribe" && Boolean(token && verifyToken && token === verifyToken);
 
   if (isValid && challenge) {
     logger.info("whatsapp.webhook", "verification succeeded");
-    return new NextResponse(challenge, { status: 200 });
+    return new NextResponse(challenge, {
+      status: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
   }
 
-  logger.warn("whatsapp.webhook", "verification failed", { mode, hasToken: Boolean(token) });
-  // Always return 200 as requested.
-  return NextResponse.json({ ok: true, verified: false }, { status: 200 });
+  logger.warn("whatsapp.webhook", "verification failed", {
+    mode,
+    hasHubToken: Boolean(token),
+    verifyTokenConfigured: Boolean(verifyToken),
+  });
+  if (!verifyToken) {
+    logger.error(
+      "whatsapp.webhook",
+      "WHATSAPP_VERIFY_TOKEN is missing in env — add it in Vercel and match Meta’s Verify token exactly",
+    );
+  }
+  return new NextResponse("Forbidden", { status: 403 });
 }
 
 export async function POST(req: Request) {

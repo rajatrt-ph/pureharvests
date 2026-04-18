@@ -67,6 +67,7 @@ export async function createOrderFromCart(userId: string, address: OrderAddressI
     phoneNumber,
     address: formatAddressForOrderLine(address),
     items: cart.items.map((item) => ({
+      productId: item.productId,
       productName: item.name,
       quantity: item.quantity,
       price: item.price,
