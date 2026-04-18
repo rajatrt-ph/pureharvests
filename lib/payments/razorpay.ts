@@ -23,7 +23,23 @@ type CreatePaymentLinkInput = {
   phone?: string;
   name?: string;
   description?: string;
+  /**
+   * Razorpay requires a **unique** `reference_id` per payment link. Reusing the same id when
+   * creating another link (e.g. “Pay again” from Track) causes API errors — use a new value here
+   * while keeping `orderId` as the business ORD… in `notes` for webhooks.
+   */
+  razorpayReferenceId?: string;
 };
+
+function formatRazorpayApiError(data: Record<string, unknown>): string {
+  const err = data.error;
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    if (typeof o.description === "string") return o.description;
+    if (typeof o.message === "string") return o.message;
+  }
+  return typeof data.error === "string" ? data.error : JSON.stringify(data.error ?? data);
+}
 
 function getRazorpayEnv() {
   const keyId = process.env.RAZORPAY_KEY_ID;
@@ -46,11 +62,14 @@ export async function createPaymentLink(order: CreatePaymentLinkInput) {
   const { keyId, keySecret } = getRazorpayEnv();
   const auth = Buffer.from(`${keyId}:${keySecret}`).toString("base64");
 
+  const referenceId = (order.razorpayReferenceId ?? order.orderId).trim();
+  if (!referenceId) throw new Error("reference_id is empty");
+
   const body = {
     amount: Math.round(order.totalAmount * 100),
     currency: "INR",
     accept_partial: false,
-    reference_id: order.orderId,
+    reference_id: referenceId,
     description: order.description ?? `Payment for order ${order.orderId}`,
     customer: {
       name: order.name ?? "",
@@ -79,8 +98,7 @@ export async function createPaymentLink(order: CreatePaymentLinkInput) {
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
 
   if (!res.ok) {
-    const message = typeof data.error === "object" ? JSON.stringify(data.error) : res.statusText;
-    throw new Error(`Razorpay payment link failed: ${message}`);
+    throw new Error(`Razorpay payment link failed: ${formatRazorpayApiError(data)}`);
   }
 
   const payUrl = extractPaymentLinkShortUrl(data);
@@ -93,7 +111,7 @@ export async function createPaymentLink(order: CreatePaymentLinkInput) {
   await connectDB();
   // Same row as first checkout: one Payment per `orderId`, overwrite link id when user pays again from Track.
   await PaymentModel.findOneAndUpdate(
-    { orderId: order.orderId },
+    { orderId: order.orderId.trim() },
     {
       orderId: order.orderId,
       amount: order.totalAmount,

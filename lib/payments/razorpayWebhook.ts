@@ -51,13 +51,19 @@ export function extractPaymentContextFromWebhookPayload(payload: Loose): Razorpa
   const payEntity = asRecord(payWrap?.entity);
 
   const referenceId = typeof plEntity?.reference_id === "string" ? plEntity.reference_id.trim() : "";
+  /** Payment link `notes` from create API (always set our `orderId` = business ORD…). Prefer over `reference_id` when we use unique refs per link (retries). */
+  const plNotes = asRecord(plEntity?.notes);
+  const orderFromPlLinkNotes =
+    (typeof plNotes?.orderId === "string" && plNotes.orderId.trim()) ||
+    (typeof plNotes?.order_id === "string" && plNotes.order_id.trim()) ||
+    "";
   const payNotes = asRecord(payEntity?.notes);
   const orderFromPaymentNotes =
     (typeof payNotes?.orderId === "string" && payNotes.orderId.trim()) ||
     (typeof payNotes?.order_id === "string" && payNotes.order_id.trim()) ||
     "";
 
-  const orderId = referenceId || orderFromPaymentNotes;
+  const orderId = orderFromPlLinkNotes || orderFromPaymentNotes || referenceId;
   if (!orderId) return null;
 
   const razorpayPaymentLinkId = typeof plEntity?.id === "string" ? plEntity.id : "";

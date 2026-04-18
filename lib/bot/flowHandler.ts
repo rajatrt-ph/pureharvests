@@ -748,6 +748,8 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
             phone: user.phone,
             name: user.name?.trim() || order.customerName,
             description: `Payment for order ${businessId}`,
+            // Razorpay rejects a second link with the same reference_id as checkout; notes.orderId stays ORD… for webhooks.
+            razorpayReferenceId: `${businessId}-r-${Date.now()}`,
           });
           const link = extractPaymentLinkShortUrl(paymentLink);
           logger.info("bot.flow", "track order payment link generated", { phone, orderId: businessId });
