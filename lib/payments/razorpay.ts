@@ -1,6 +1,21 @@
 import { connectDB } from "@/lib/db";
 import { PaymentModel } from "@/models/Payment";
 
+/** Razorpay `POST /v1/payment_links` returns `short_url` at root; tolerate minor shape differences. */
+export function extractPaymentLinkShortUrl(data: unknown): string {
+  if (typeof data !== "object" || data === null) return "";
+  const d = data as Record<string, unknown>;
+  const pick = (x: unknown) => (typeof x === "string" && /^https?:\/\//i.test(x) ? x : "");
+  const root = pick(d.short_url) || pick(d.url);
+  if (root) return root;
+  const entity = d.entity;
+  if (entity && typeof entity === "object") {
+    const e = entity as Record<string, unknown>;
+    return pick(e.short_url) || pick(e.url);
+  }
+  return "";
+}
+
 type CreatePaymentLinkInput = {
   orderId: string;
   userId: string;
@@ -68,6 +83,13 @@ export async function createPaymentLink(order: CreatePaymentLinkInput) {
     throw new Error(`Razorpay payment link failed: ${message}`);
   }
 
+  const payUrl = extractPaymentLinkShortUrl(data);
+  if (!payUrl) {
+    throw new Error(
+      `Razorpay payment link response missing short_url (id=${String(data.id ?? "")}). Check API keys and account mode.`,
+    );
+  }
+
   await connectDB();
   // Same row as first checkout: one Payment per `orderId`, overwrite link id when user pays again from Track.
   await PaymentModel.findOneAndUpdate(
@@ -81,6 +103,6 @@ export async function createPaymentLink(order: CreatePaymentLinkInput) {
     { upsert: true, new: true, runValidators: true },
   );
 
-  return data;
+  return { ...data, short_url: payUrl };
 }
 

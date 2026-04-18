@@ -1,5 +1,5 @@
 import { detectIntent } from "@/lib/bot/intentDetector";
-import { createPaymentLink } from "@/lib/payments/razorpay";
+import { createPaymentLink, extractPaymentLinkShortUrl } from "@/lib/payments/razorpay";
 import { logger } from "@/lib/utils/logger";
 import { isValidPhone } from "@/lib/utils/phone";
 import { addItemToCart, getOrCreateCart } from "@/lib/services/cartService";
@@ -54,16 +54,40 @@ function formatInrCartTotal(total: number) {
   return `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(total)}`;
 }
 
-function paymentLinkShortUrl(data: unknown): string {
-  if (
-    typeof data === "object" &&
-    data !== null &&
-    "short_url" in data &&
-    typeof (data as { short_url?: unknown }).short_url === "string"
-  ) {
-    return (data as { short_url: string }).short_url;
+/** WhatsApp interactive body max ~1024 chars; leave margin for formatting. */
+const WHATSAPP_CTA_BODY_SAFE_MAX = 1000;
+
+function truncateForWhatsAppCtaBody(text: string): string {
+  const t = text.trim();
+  if (t.length <= WHATSAPP_CTA_BODY_SAFE_MAX) return t;
+  return `${t.slice(0, WHATSAPP_CTA_BODY_SAFE_MAX - 24)}\n\n_(Message trimmed — open Pay now for full amount on Razorpay.)_`;
+}
+
+/** Normalize Mongo `lean()` order fields (numbers/strings/Decimal-like). */
+function coerceOrderMoney(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const n = Number.parseFloat(value);
+    if (Number.isFinite(n)) return n;
   }
-  return "";
+  if (value != null && typeof value === "object" && "toString" in value) {
+    const n = Number.parseFloat(String(value));
+    if (Number.isFinite(n)) return n;
+  }
+  return Number.NaN;
+}
+
+function orderBusinessOrderId(order: { businessOrderId?: unknown }): string {
+  const raw = order.businessOrderId;
+  if (raw == null) return "";
+  const s = typeof raw === "string" ? raw : String(raw);
+  return s.trim();
+}
+
+function orderPaymentStatusNormalized(order: { paymentStatus?: unknown }): string {
+  const raw = order.paymentStatus;
+  if (raw == null) return "";
+  return String(raw).trim().toLowerCase();
 }
 
 type CartMenuLine = { name: string; quantity: number; price: number };
@@ -704,38 +728,38 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
 
       await resetSession(phone);
 
-      const businessId =
-        typeof order.businessOrderId === "string" ? order.businessOrderId.trim() : "";
+      const businessId = orderBusinessOrderId(order);
+      const paymentStatus = orderPaymentStatusNormalized(order);
+      const orderValueNum = coerceOrderMoney(order.orderValue);
       const paymentNeedsRetry =
-        (order.paymentStatus === "pending" || order.paymentStatus === "failed") &&
+        (paymentStatus === "pending" || paymentStatus === "failed") &&
         businessId.length > 0 &&
-        typeof order.orderValue === "number" &&
-        order.orderValue > 0;
+        Number.isFinite(orderValueNum) &&
+        orderValueNum > 0;
 
       if (paymentNeedsRetry) {
-        const payCtaHint = order.paymentStatus === "failed" ? ("failed" as const) : ("pending" as const);
-        const buttonText = order.paymentStatus === "failed" ? "Retry payment" : "Pay now";
+        const payCtaHint = paymentStatus === "failed" ? ("failed" as const) : ("pending" as const);
+        const buttonText = paymentStatus === "failed" ? "Retry payment" : "Pay now";
         try {
           const paymentLink = await createPaymentLink({
             orderId: businessId,
             userId: user.userId,
-            totalAmount: order.orderValue,
+            totalAmount: orderValueNum,
             phone: user.phone,
             name: user.name?.trim() || order.customerName,
             description: `Payment for order ${businessId}`,
           });
-          const link = paymentLinkShortUrl(paymentLink);
-          if (link) {
-            logger.info("bot.flow", "track order payment link generated", { phone, orderId: businessId });
-            return {
-              kind: "payment_link_cta",
-              orderId: businessId,
-              payUrl: link,
-              body: formatTrackOrderDetailFromOrder(order, { payCtaHint }),
-              buttonText,
-              footer: "Pure Harvests",
-            };
-          }
+          const link = extractPaymentLinkShortUrl(paymentLink);
+          logger.info("bot.flow", "track order payment link generated", { phone, orderId: businessId });
+          const detailBody = formatTrackOrderDetailFromOrder(order, { payCtaHint });
+          return {
+            kind: "payment_link_cta",
+            orderId: businessId,
+            payUrl: link,
+            body: truncateForWhatsAppCtaBody(detailBody),
+            buttonText,
+            footer: "Pure Harvests",
+          };
         } catch (error) {
           const message = error instanceof Error ? error.message : "unknown";
           logger.error("bot.flow", "track order payment link failed", {
@@ -744,6 +768,7 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
             error: message,
           });
         }
+        return `${formatTrackOrderDetailFromOrder(order)}\n\n⚠️ Could not open a payment link (check Razorpay keys / network). Try again in a moment or contact support.`;
       }
 
       return formatTrackOrderDetailFromOrder(order);
@@ -1078,7 +1103,7 @@ export async function handleMessage(phone: string, message: IncomingMessage): Pr
       return "Could not create order right now. Please try again later.";
     }
 
-    const link = paymentLinkShortUrl(paymentLink);
+    const link = extractPaymentLinkShortUrl(paymentLink);
 
     await resetSession(phone);
     logger.info("bot.flow", "order created", { phone, orderId: order.orderId });

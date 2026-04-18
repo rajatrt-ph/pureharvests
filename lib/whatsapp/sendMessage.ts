@@ -153,10 +153,16 @@ export async function sendMessage(to: string, message: WhatsAppMessagePayload) {
             if (!/^https:\/\//i.test(url)) {
               throw new Error("CTA URL must use https");
             }
-            const bodyText = normalizedPayload.body.trim();
-            if (!bodyText) {
+            const rawBody = normalizedPayload.body.trim();
+            if (!rawBody) {
               throw new Error("CTA body text is required");
             }
+            /** WhatsApp Cloud API: interactive body text max 1024 characters. */
+            const CTA_BODY_MAX = 1024;
+            const bodyText =
+              rawBody.length > CTA_BODY_MAX
+                ? `${rawBody.slice(0, CTA_BODY_MAX - 20)}…`
+                : rawBody;
             return {
               messaging_product: "whatsapp",
               to: normalizedPhone,
